@@ -1,0 +1,109 @@
+---
+title: 'Team CarJan: Predict tree cover'
+author: "Jan Droesen and Careli Caballero"
+date: "January 14, 2016"
+output: html_document
+---
+In this report a model is developed for predicting the percentage of tree cover at the Gewata dataset. 
+```{r setup, include=FALSE}
+## libraries
+library(raster)
+library(rgdal)
+library(graphics)
+
+## load data
+load("data/GewataB2.rda")
+load("data/GewataB3.rda")
+load("data/GewataB4.rda")
+load("data/GewataB1.rda")
+load("data/GewataB5.rda")
+load("data/GewataB7.rda")
+load("data/vcfGewata.rda")
+```
+
+## Processing data and plot bands against tree cover
+
+```{r bands and VCF}
+
+#Erase tree cover higher than 100%
+vcfGewata[vcfGewata > 100] <- NA
+
+#make bricks and assign names to each brick layer
+bandsgewata <- brick(GewataB1,GewataB2, GewataB3, GewataB4, GewataB5, GewataB7)
+alllayers <- addLayer(bandsgewata, vcfGewata)
+names(bandsgewata) <- c("BlueBand", "GreenBand", "RedBand", "NIR", "SWIR", "MIR")
+names(alllayers) <- c("BlueBand", "GreenBand", "RedBand", "NIR", "SWIR", "MIR", "VCF")
+
+#plot all bands with VCF
+par(mfrow = c(3,2))
+plot(alllayers[[1:6]], alllayers[[7]], xlab = names(alllayers), ylab = ("Tree cover (%)"))
+```
+
+Each plot represents the relation between LANDSAT7 ETM+ bands and the Vegetation Continuous Field product. High correlations for the red and SWIR can be derived.
+
+```{r Linear model (LM)}
+#process data for linear regression model
+dfgewata <- as.data.frame(getValues(alllayers))
+#erase NAś
+dfgewata <- na.omit(dfgewata)
+
+#multiple regression model with all bands
+modelMultipleAll <- lm(VCF ~ BlueBand + GreenBand + RedBand + NIR + SWIR + MIR, data = dfgewata)
+#check for significant bands
+summary(modelMultipleAll)
+
+#erase non-significant band(s) and run linear regression model
+modelMultiple <- lm(VCF ~ BlueBand + GreenBand + RedBand + NIR + SWIR, data = dfgewata)
+```
+##
+From the multiple regression model of all bands the signifance is investigated. Non-significant bands (i.e. only the Middle Infrared (MIR) band) were erased. The optimal multiple regression model is now calculated.
+
+```{r comparison LM and VCF}
+
+
+#predicted values
+predTC <- predict(bandsgewata, model=modelMultiple, na.rm=TRUE)
+
+#comparing predicted and VCF tree cover
+
+#get the difference between VCF and predicted
+raserDif <- vcfGewata - predTC
+
+#calculate RMSE separately for each of the classes
+calcRMSE <- function(x,y){
+	sqrt(mean((x-y)^2))
+}
+polyError <- calcRMSE(vcfGewata,predTC)
+
+#visualize difference beteen VCF and predicted
+colfunc <- colorRampPalette(c("white", "red"))
+par(mfrow = c(2,2))
+plot(vcfGewata, main="Tree cover (VCF)", zlim=c(0,100) )
+plot(predTC, main="Tree cover predicted (LM)", zlim=c(0,100)) #add 0-100
+plot(raserDif, main="Difference in tree cover", col=colfunc(255),  zlim=c(0,50))
+plot(polyError, main="RMSE of VCF and LM",col=colfunc(255),  zlim=c(0,50))
+```
+
+In the plots the tree cover from the VCF product and the linear model is shown. Remarkable is that in the areas with high tree cover the errors seems to be higher. To check this the errors of the LM are calculated for three land cover types.
+
+```{r error LM for land cover}
+#get errors for the LM with the land cover types
+load("data/trainingPoly.rda")
+trainingPoly@data$Code <- as.numeric(trainingPoly@data$Class)
+classes <- rasterize(trainingPoly, polyError, field='Code')
+
+#calculate error per land cover class
+errorTraining <- zonal(polyError, classes, fun='mean', digits=0)
+dferrorTraining <- as.data.frame(errorTraining)
+
+#which class corresponds to highest error
+mergedPolyError <- merge(x = trainingPoly, y = dferrorTraining, by.x = "Code", by.y = "zone")
+
+#visualize errors per land cover type
+x <- mergedPolyError$Class
+y <- mergedPolyError$mean
+par(mfrow=c(1,1))
+plot(x,y, ylim= c(0,10), "s", ylab="RMSE")
+```
+
+After getting the error per each land cover class (cropland, forest and wetland), the most accurate class was forest with the lowest error, which was as expected, because of the VCF product.
